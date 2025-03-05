@@ -11,6 +11,7 @@
 #include <string.h>
 #include <gst/gst.h>
 #include <windows.h>
+#include <json-glib/json-glib.h>
 
 #define APP_DIRECTORY "./ZoraNT/Programs"  // Path to applications directory
 #define USER_DIRECTORY "./ZoraNT/User"     // Path to user directory
@@ -37,6 +38,10 @@ void show_shutdown_splash();
 static void play_shutdown_sound(const char *base_path);
 void add_taskbar_button(const char *app_name, const char *icon_path);
 void open_network_settings(GtkWidget *widget, gpointer data);
+void load_profiles(GtkWidget *profiles_menu);
+void show_profile(GtkWidget *widget, gpointer profile_path);
+void create_new_profile(GtkWidget *widget, gpointer data);
+void save_profile(const char *profile_name, const char *bio, const char *image_path);
 
 // Function to load an icon from a file
 GtkWidget *load_icon(const char *icon_path) {
@@ -101,6 +106,15 @@ GtkWidget *create_start_menu(GtkWidget *window) {
     GtkWidget *settings_item2 = gtk_menu_item_new_with_label("Network Settings");
     g_signal_connect(settings_item2, "activate", G_CALLBACK(open_network_settings), NULL); // Updated line
     gtk_menu_shell_append(GTK_MENU_SHELL(settings_menu), settings_item2);
+
+    // Profiles submenu
+    GtkWidget *profiles_menu = gtk_menu_new();
+    GtkWidget *profiles_item = gtk_menu_item_new_with_label("Profiles");
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(profiles_item), profiles_menu);
+    gtk_menu_shell_append(GTK_MENU_SHELL(start_menu), profiles_item);
+
+    // Load profiles dynamically
+    load_profiles(profiles_menu);
 
     // Run dialog
     GtkWidget *run_item = gtk_menu_item_new_with_label("Run...");
@@ -627,4 +641,164 @@ void open_network_settings(GtkWidget *widget, gpointer data) {
         g_error_free(error);
     }
 #endif
+}
+
+// Function to load profiles from the Profile directory
+void load_profiles(GtkWidget *profiles_menu) {
+    DIR *dir = opendir("./ZoraNT/Profile");
+    if (!dir) {
+        perror("Failed to open the profiles directory");
+        return;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue; // Skip hidden files
+
+        // Construct the profile path
+        char profile_path[256];
+        snprintf(profile_path, sizeof(profile_path), "./ZoraNT/Profile/%s", entry->d_name);
+
+        // Load the profile image (default image for now)
+        char icon_path[256];
+        snprintf(icon_path, sizeof(icon_path), "./ZoraNT/Sys404/default_profile_image.png");
+
+        GtkWidget *icon = load_icon(icon_path);
+        GtkWidget *profile_item = gtk_image_menu_item_new_with_label(entry->d_name);
+        gtk_image_menu_item_set_image(GTK_IMAGE_MENU_ITEM(profile_item), icon);
+        g_signal_connect(profile_item, "activate", G_CALLBACK(show_profile), g_strdup(profile_path));
+        gtk_menu_shell_append(GTK_MENU_SHELL(profiles_menu), profile_item);
+    }
+    closedir(dir);
+
+    // Add "Create New Profile" item
+    GtkWidget *new_profile_item = gtk_menu_item_new_with_label("Create New Profile");
+    g_signal_connect(new_profile_item, "activate", G_CALLBACK(create_new_profile), profiles_menu);
+    gtk_menu_shell_append(GTK_MENU_SHELL(profiles_menu), new_profile_item);
+}
+
+// Function to show the profile window
+void show_profile(GtkWidget *widget, gpointer profile_path) {
+    const char *path = (const char *)profile_path;
+    g_print("Opening profile from path: %s\n", path);
+
+    // Create a new window for the profile
+    GtkWidget *profile_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(profile_window), "Profile");
+    gtk_window_set_default_size(GTK_WINDOW(profile_window), 400, 300);
+
+    // Load profile information from JSON file
+    char json_path[256];
+    snprintf(json_path, sizeof(json_path), "%s/profile.json", path);
+    JsonParser *parser = json_parser_new();
+    GError *error = NULL;
+    if (!json_parser_load_from_file(parser, json_path, &error)) {
+        g_printerr("Failed to load profile JSON: %s\n", error->message);
+        g_error_free(error);
+        g_object_unref(parser);
+        gtk_widget_destroy(profile_window);
+        return;
+    }
+
+    JsonNode *root = json_parser_get_root(parser);
+    JsonObject *object = json_node_get_object(root);
+
+    const char *name = json_object_get_string_member(object, "name");
+    const char *bio = json_object_get_string_member(object, "bio");
+    const char *image_path = json_object_get_string_member(object, "image");
+
+    // Create widgets to display profile information
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_container_add(GTK_CONTAINER(profile_window), vbox);
+
+    GtkWidget *image = load_icon(image_path);
+    gtk_box_pack_start(GTK_BOX(vbox), image, FALSE, FALSE, 5);
+
+    GtkWidget *name_label = gtk_label_new(name);
+    gtk_box_pack_start(GTK_BOX(vbox), name_label, FALSE, FALSE, 5);
+
+    GtkWidget *bio_label = gtk_label_new(bio);
+    gtk_box_pack_start(GTK_BOX(vbox), bio_label, FALSE, FALSE, 5);
+
+    gtk_widget_show_all(profile_window);
+    g_object_unref(parser);
+    g_free(profile_path);
+}
+
+// Function to create a new profile
+void create_new_profile(GtkWidget *widget, gpointer data) {
+    GtkWidget *dialog = gtk_dialog_new_with_buttons("Create New Profile", NULL, GTK_DIALOG_MODAL,
+                                                    "_Create", GTK_RESPONSE_ACCEPT,
+                                                    "_Cancel", GTK_RESPONSE_REJECT,
+                                                    NULL);
+    GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+
+    GtkWidget *name_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(name_entry), "Profile Name");
+    gtk_box_pack_start(GTK_BOX(content_area), name_entry, FALSE, FALSE, 5);
+
+    GtkWidget *bio_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(bio_entry), "Bio");
+    gtk_box_pack_start(GTK_BOX(content_area), bio_entry, FALSE, FALSE, 5);
+
+    GtkWidget *file_chooser_button = gtk_file_chooser_button_new("Select Profile Image", GTK_FILE_CHOOSER_ACTION_OPEN);
+    gtk_box_pack_start(GTK_BOX(content_area), file_chooser_button, FALSE, FALSE, 5);
+
+    gtk_widget_show_all(dialog);
+
+    gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+    if (response == GTK_RESPONSE_ACCEPT) {
+        const gchar *profile_name = gtk_entry_get_text(GTK_ENTRY(name_entry));
+        const gchar *bio = gtk_entry_get_text(GTK_ENTRY(bio_entry));
+        gchar *image_path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(file_chooser_button));
+
+        save_profile(profile_name, bio, image_path);
+
+        // Reload profiles menu
+        GtkWidget *profiles_menu = GTK_WIDGET(data);
+        GList *children = gtk_container_get_children(GTK_CONTAINER(profiles_menu));
+        for (GList *iter = children; iter != NULL; iter = g_list_next(iter)) {
+            gtk_widget_destroy(GTK_WIDGET(iter->data));
+        }
+        g_list_free(children);
+        load_profiles(profiles_menu);
+
+        g_free(image_path);
+    }
+
+    gtk_widget_destroy(dialog);
+}
+
+// Function to save a new profile
+void save_profile(const char *profile_name, const char *bio, const char *image_path) {
+    char profile_dir[256];
+    snprintf(profile_dir, sizeof(profile_dir), "./ZoraNT/Profile/%s", profile_name);
+    mkdir(profile_dir);
+
+    char json_path[256];
+    snprintf(json_path, sizeof(json_path), "%s/profile.json", profile_dir);
+
+    JsonBuilder *builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "name");
+    json_builder_add_string_value(builder, profile_name);
+    json_builder_set_member_name(builder, "bio");
+    json_builder_add_string_value(builder, bio);
+    json_builder_set_member_name(builder, "image");
+    json_builder_add_string_value(builder, image_path);
+    json_builder_end_object(builder);
+
+    JsonGenerator *gen = json_generator_new();
+    JsonNode *root = json_builder_get_root(builder);
+    json_generator_set_root(gen, root);
+    json_generator_to_file(gen, json_path, NULL);
+
+    g_object_unref(gen);
+    json_node_free(root);
+    g_object_unref(builder);
+
+    // Copy the selected image to the profile directory
+    char dest_image_path[256];
+    snprintf(dest_image_path, sizeof(dest_image_path), "%s/profile_image.png", profile_dir);
+    g_file_copy(g_file_new_for_path(image_path), g_file_new_for_path(dest_image_path), G_FILE_COPY_NONE, NULL, NULL, NULL, NULL);
 }
